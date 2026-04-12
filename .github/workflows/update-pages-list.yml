@@ -1,48 +1,51 @@
-name: Update Pages List
+name: Update Pages List and Deploy
 
 on:
   schedule:
-    # 每天 UTC 0 点运行一次（你也可以按需修改）
     - cron: '0 0 * * *'
-  workflow_dispatch:   # 允许手动触发
+  workflow_dispatch:
   push:
     branches:
-      - main          # 如果你默认分支是 master，改成 master
+      - main
+
+# 授予 GITHUB_TOKEN 所需的权限
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# 防止并发部署冲突
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
+  # 第一个 Job：生成 pages-list.json 并推送到仓库
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write   # 允许推送代码到仓库
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Generate pages list
         run: |
-          # 使用 GitHub CLI 或 API（已认证，高限制）
-          # 获取所有仓库列表（排除自身 tim-cn.github.io）
           repos=$(gh api users/tim-cn/repos --paginate --jq '.[] | select(.name != "tim-cn.github.io") | .name')
           echo "Found repos: $repos"
           
-          # 创建 JSON 数组
           echo '[]' > pages-list.json
           for repo in $repos; do
-            # 检查该仓库是否启用了 Pages
             pages_url="https://api.github.com/repos/tim-cn/$repo/pages"
             if gh api "$pages_url" --silent 2>/dev/null; then
-              # 获取 Pages 的 html_url
               html_url=$(gh api "$pages_url" --jq '.html_url')
               description=$(gh api "repos/tim-cn/$repo" --jq '.description // ""')
-              # 追加到 JSON
               jq --arg name "$repo" --arg url "$html_url" --arg desc "$description" \
                 '. += [{"name": $name, "url": $url, "description": $desc}]' pages-list.json > tmp.json && mv tmp.json pages-list.json
             fi
           done
           
-          cat pages-list.json   # 调试输出
+          cat pages-list.json
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # 自动提供的 token，有足够权限
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Commit and push if changed
         run: |
@@ -51,3 +54,27 @@ jobs:
           git add pages-list.json
           git diff --quiet && git diff --staged --quiet || git commit -m "Auto update pages list"
           git push
+
+  # 第二个 Job：部署到 GitHub Pages（仅在 build 成功后触发）
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # 上传整个仓库目录
+          path: '.'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
