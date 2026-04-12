@@ -15,6 +15,11 @@
     "description": "Spammer"
   },
   {
+    "name": "colorer",
+    "url": "https://tim-cn.github.io/colorer/",
+    "description": "颜色查看器"
+  },
+  {
     "name": "HTML-compiler",
     "url": "https://tim-cn.github.io/HTML-compiler/",
     "description": "HTML-compiler"
