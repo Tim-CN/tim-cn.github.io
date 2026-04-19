@@ -1,80 +1,106 @@
+# 工作流名称：更新页面列表并部署
 name: Update Pages List and Deploy
 
+# 触发条件：定时任务（每天UTC 0点）、手动触发、推送到main分支时
 on:
   schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch:
+    - cron: '0 0 * * *'   # 每天0点执行一次
+  workflow_dispatch:       # 允许通过GitHub界面手动触发工作流
   push:
     branches:
-      - main
+      - main               # 当main分支有推送时触发
 
-# 授予 GITHUB_TOKEN 所需的权限
+# 授予GITHUB_TOKEN的权限（用于后续操作）
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: write          # 允许写入仓库内容（如推送代码）
+  pages: write             # 允许部署到GitHub Pages
+  id-token: write          # 允许获取OIDC令牌（用于Pages认证）
 
-# 防止并发部署冲突
+# 防止并发部署冲突，同一组内只允许一个运行中或待处理的job
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: "pages"           # 并发组名称为pages
+  cancel-in-progress: false # 不取消正在进行的任务，允许排队等待
 
+# 定义两个Job：build（生成JSON）和deploy（部署Pages）
 jobs:
-  # 第一个 Job：生成 pages-list.json 并推送到仓库
+  # 第一个Job：生成pages-list.json并推送到仓库
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # 运行在最新版Ubuntu环境
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout repo   # 步骤名称：检出仓库代码
+        uses: actions/checkout@v4  # 使用官方checkout action，版本v4
 
-      - name: Generate pages list
-        run: |
+      - name: Generate pages list  # 步骤名称：生成页面列表
+        run: |                    # 运行多行shell命令
+          # 获取所有公开仓库（排除tim-cn.github.io自身）
           repos=$(gh api users/tim-cn/repos --paginate --jq '.[] | select(.name != "tim-cn.github.io") | .name')
-          echo "Found repos: $repos"
-          
+          echo "Found repos: $repos"   # 打印找到的仓库名
+
+          # 初始化空数组文件
           echo '[]' > pages-list.json
-          for repo in $repos; do
-            pages_url="https://api.github.com/repos/tim-cn/$repo/pages"
-            if gh api "$pages_url" --silent 2>/dev/null; then
-              html_url=$(gh api "$pages_url" --jq '.html_url')
-              description=$(gh api "repos/tim-cn/$repo" --jq '.description // ""')
-              jq --arg name "$repo" --arg url "$html_url" --arg desc "$description" \
-                '. += [{"name": $name, "url": $url, "description": $desc}]' pages-list.json > tmp.json && mv tmp.json pages-list.json
+
+          for repo in $repos; do      # 遍历每个仓库
+            echo "Checking $repo..."
+
+            # 获取Pages信息（即使关闭也会返回200，但status为unpublished）
+            pages_info=$(gh api "repos/tim-cn/$repo/pages" --silent 2>/dev/null)
+            if [ -z "$pages_info" ]; then   # 如果没有返回信息则跳过
+              echo "  No pages API response, skipping."
+              continue
             fi
+
+            # 提取状态和URL
+            status=$(echo "$pages_info" | jq -r '.status')
+            html_url=$(echo "$pages_info" | jq -r '.html_url // ""')
+
+            # 只收录真正已构建发布的站点（status为built且URL非空）
+            if [ "$status" != "built" ] || [ -z "$html_url" ]; then
+              echo "  Status: $status, html_url: ${html_url:-empty} -> skipping."
+              continue
+            fi
+
+            # 获取仓库描述
+            description=$(gh api "repos/tim-cn/$repo" --jq '.description // ""')
+            echo "  Adding $repo ($html_url)"
+
+            # 追加到JSON数组：构造新的对象并添加到数组末尾
+            jq --arg name "$repo" --arg url "$html_url" --arg desc "$description" \
+              '. += [{"name": $name, "url": $url, "description": $desc}]' \
+              pages-list.json > tmp.json && mv tmp.json pages-list.json
           done
-          
+
+          echo "Final pages-list.json:"   # 打印最终生成的JSON内容
           cat pages-list.json
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 为gh命令提供GitHub令牌
 
-      - name: Commit and push if changed
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pages-list.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Auto update pages list"
-          git push
+      - name: Commit and push if changed  # 步骤名称：如有变更则提交并推送
+        run: |                           # 运行多行命令
+          git config user.name "github-actions[bot]"          # 设置提交用户名
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"  # 设置提交邮箱
+          git add pages-list.json        # 将生成的JSON文件加入暂存区
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto update pages list"  # 若有变更则提交
+          git push                       # 推送到远程仓库
 
-  # 第二个 Job：部署到 GitHub Pages（仅在 build 成功后触发）
+  # 第二个Job：部署到GitHub Pages（仅在build成功后触发）
   deploy:
-    needs: build
-    runs-on: ubuntu-latest
+    needs: build           # 依赖build job，只有build成功才执行
+    runs-on: ubuntu-latest # 运行环境
     environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      name: github-pages   # 部署环境名称
+      url: ${{ steps.deployment.outputs.page_url }}  # 部署后的Pages URL
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout     # 步骤名称：检出代码
+        uses: actions/checkout@v4   # 再次检出仓库
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
+      - name: Setup Pages   # 步骤名称：配置Pages
+        uses: actions/configure-pages@v4  # 准备Pages环境
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Upload artifact  # 步骤名称：上传构建产物
+        uses: actions/upload-pages-artifact@v3  # 将当前目录（整个仓库）上传为Pages artifact
         with:
-          # 上传整个仓库目录
-          path: '.'
+          path: '.'            # 上传路径为当前目录（包含所有文件）
 
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy to GitHub Pages  # 步骤名称：部署到Pages
+        id: deployment          # 给步骤设置ID，便于后续引用输出
+        uses: actions/deploy-pages@v4  # 执行部署操作
