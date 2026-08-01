@@ -35,6 +35,11 @@
     "description": "HTML-compiler"
   },
   {
+    "name": "kongbu",
+    "url": "https://tim-cn.github.io/kongbu/",
+    "description": ""
+  },
+  {
     "name": "luogu",
     "url": "https://tim-cn.github.io/luogu/",
     "description": ""
